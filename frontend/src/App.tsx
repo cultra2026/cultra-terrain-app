@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Feature, MapState, PelotonType } from './types';
@@ -26,6 +26,15 @@ interface UserLocation {
   status: 'active' | 'inactive' | 'emergency';
 }
 
+interface LidarDataset {
+  id: string;
+  name: string;
+  source: 'local' | 'online';
+  status: 'active' | 'ready' | 'sync';
+  area: string;
+  resolution: string;
+}
+
 const PELOTAO_COLORS: Record<PelotonType, string> = {
   alfa: '#3b82f6',
   bravo: '#10b981',
@@ -47,6 +56,11 @@ function App() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [currentScenario, setCurrentScenario] = useState<string | null>(null);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
+  const [lidarDatasets, setLidarDatasets] = useState<LidarDataset[]>([
+    { id: 'online-1', name: 'Copernicus DEM', source: 'online', status: 'active', area: 'CULTRA / Serra', resolution: '10 m' },
+    { id: 'online-2', name: 'OpenTopography', source: 'online', status: 'ready', area: 'Zonamento geral', resolution: '1 m' },
+    { id: 'online-3', name: 'USGS 3DEP', source: 'online', status: 'sync', area: 'Área de missão', resolution: '30 m' },
+  ]);
 
   const [editMode, setEditMode] = useState<'view' | 'draw' | 'edit'>('view');
   const [selectedType, setSelectedType] = useState<string>('camp');
@@ -57,11 +71,33 @@ function App() {
 
   const layerRefs = useRef<Record<string, L.TileLayer>>({});
 
+  const terrainSummary = useMemo(() => {
+    const averageLat = mapState.features.length
+      ? mapState.features.reduce((sum, f) => sum + f.coordinates[0], 0) / mapState.features.length
+      : CULTRA_CENTER[0];
+
+    const averageLng = mapState.features.length
+      ? mapState.features.reduce((sum, f) => sum + f.coordinates[1], 0) / mapState.features.length
+      : CULTRA_CENTER[1];
+
+    return {
+      totalFeatures: mapState.features.length,
+      totalDatasets: lidarDatasets.length,
+      averageLat,
+      averageLng,
+      terrainBand: averageLat > 40.88 ? 'montanhoso' : 'plano',
+    };
+  }, [mapState.features, lidarDatasets]);
+
   useEffect(() => {
     if (map.current) return;
 
     if (mapContainer.current) {
       map.current = L.map(mapContainer.current).setView(CULTRA_CENTER, ZOOM_LEVEL);
+
+      requestAnimationFrame(() => {
+        map.current?.invalidateSize();
+      });
 
       layerRefs.current.osm = L.tileLayer(
         'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -112,6 +148,10 @@ function App() {
     if (layer) {
       map.current.addLayer(layer);
     }
+
+    requestAnimationFrame(() => {
+      map.current?.invalidateSize();
+    });
   }, [mapLayer]);
 
   const loadInitialData = () => {
@@ -250,6 +290,15 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setLidarDatasets(prev => [{
+      id: `local-${Date.now()}`,
+      name: file.name,
+      source: 'local',
+      status: 'ready',
+      area: 'Dados carregados',
+      resolution: file.name.endsWith('.las') || file.name.endsWith('.laz') ? '0.5 m' : 'N/D',
+    }, ...prev]);
+
     try {
       const text = await file.text();
       let geojson: any;
@@ -371,7 +420,7 @@ function App() {
 
           <div className="section">
             <h3>Importar Ficheiros</h3>
-            <input type="file" accept=".kml,.geojson,.json" onChange={handleFileUpload} style={{ fontSize: '0.8em' }} />
+            <input type="file" accept=".las,.laz,.kml,.geojson,.json" onChange={handleFileUpload} style={{ fontSize: '0.8em' }} />
           </div>
 
           <div className="section">
@@ -430,8 +479,18 @@ function App() {
             <button className="btn" onClick={() => setShowTerrainAnalysis(!showTerrainAnalysis)}>{showTerrainAnalysis ? '🔒' : '🔓'} Análise</button>
             {showTerrainAnalysis && (
               <div className="terrain-analysis">
-                <p>📊 Pontos: {mapState.features.length}</p>
-                <p>📍 Centro: {CULTRA_CENTER[0].toFixed(4)}°</p>
+                <p>📊 Pontos: {terrainSummary.totalFeatures}</p>
+                <p>📍 Centro: {terrainSummary.averageLat.toFixed(4)}°, {terrainSummary.averageLng.toFixed(4)}°</p>
+                <p>⛰️ Tipo: {terrainSummary.terrainBand}</p>
+                <p>🛰️ LIDAR: {terrainSummary.totalDatasets} fontes</p>
+                <div className="lidar-list">
+                  {lidarDatasets.map(data => (
+                    <div key={data.id} className="lidar-item">
+                      <strong>{data.name}</strong>
+                      <small>{data.source} • {data.status} • {data.resolution}</small>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
