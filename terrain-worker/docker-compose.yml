@@ -1,0 +1,14 @@
+services:
+  cultra-terrain-worker:
+    build:
+      context: .
+
+    container_name: cultra-terrain-worker
+
+    ports:
+      - "8080:8080"
+
+    volumes:
+      - ./data:/data
+
+    restart: unless-stopped
