@@ -132,3 +132,4 @@ E a aplicação passa a poder:
 GeoTIFF → leitura raster → elevação → amostragem → rota → declive → perfil → azimute.
 O LAZ segue outro caminho:
 LAZ → FastAPI → PDAL → informação da nuvem → cruzamento MDT/LiDAR.
+# cultra-terrain-app
