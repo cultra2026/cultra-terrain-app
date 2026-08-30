@@ -1,168 +1,370 @@
-import { useEffect, useMemo, useState } from 'react';
-import { exportTerrain } from './export';
-import { fetchTerrain, generateTerrain } from './terrain';
-import type { ExportFormat, TerrainCell, TerrainMap } from './types';
+import { useState, useEffect, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import type { Feature, Camp, Box, MapState, PelotonType, ZoneType } from './types';
+import './styles.css';
 
-const colorByBiome: Record<string, string> = {
-  ocean: '#1d4ed8',
-  shore: '#94a3b8',
-  plains: '#a3e635',
-  forest: '#15803d',
-  savanna: '#d97706',
-  wetlands: '#22c55e',
-  mountain: '#64748b',
-  tundra: '#e2e8f0',
+const CULTRA_CENTER: [number, number] = [40.879417, -7.348667];
+const ZOOM_LEVEL = 13;
+
+// Color scheme by zone type
+const ZONE_COLORS: Record<ZoneType, string> = {
+  safe: '#4ade80',      // green
+  risk: '#f59e0b',      // amber
+  danger: '#ef4444',    // red
+  restricted: '#8b5cf6', // purple
+  emergency: '#06b6d4'  // cyan
 };
 
-const DEMO_WIDTH = 28;
-const DEMO_HEIGHT = 18;
+// Pelotão colors
+const PELOTAO_COLORS: Record<PelotonType, string> = {
+  alfa: '#3b82f6',      // blue
+  bravo: '#10b981',     // emerald
+  charlie: '#f97316'    // orange
+};
 
 function App() {
-  const [seed, setSeed] = useState(42);
-  const [roughness, setRoughness] = useState(0.8);
-  const [moistureBias, setMoistureBias] = useState(0.15);
-  const [temperatureBias, setTemperatureBias] = useState(0.1);
-  const [terrain, setTerrain] = useState<TerrainMap>(() => generateTerrain({
-    width: DEMO_WIDTH,
-    height: DEMO_HEIGHT,
-    seed,
-    roughness,
-    moistureBias,
-    temperatureBias,
-  }));
-  const [apiStatus, setApiStatus] = useState('Loading terrain worker…');
+  const mapContainer = useRef<HTMLDivElement>(null);
+  const map = useRef<L.Map | null>(null);
+  const layerGroup = useRef<L.FeatureGroup>(new L.FeatureGroup());
+  
+  const [mapState, setMapState] = useState<MapState>({
+    features: [],
+    routes: [],
+    zones: [],
+    users: [],
+  });
 
+  const [editMode, setEditMode] = useState<'view' | 'draw' | 'edit'>('view');
+  const [selectedType, setSelectedType] = useState<string>('camp');
+  const [selectedName, setSelectedName] = useState('');
+
+  // Initialize map
   useEffect(() => {
-    let active = true;
+    if (map.current) return;
+    
+    if (mapContainer.current) {
+      map.current = L.map(mapContainer.current).setView(CULTRA_CENTER, ZOOM_LEVEL);
 
-    const loadTerrain = async () => {
-      const options = {
-        width: DEMO_WIDTH,
-        height: DEMO_HEIGHT,
-        seed,
-        roughness,
-        moistureBias,
-        temperatureBias,
-      };
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19,
+      }).addTo(map.current);
 
-      try {
-        const remoteMap = await fetchTerrain(options);
-        if (active) {
-          setTerrain(remoteMap);
-          setApiStatus('Live terrain from terrain-worker');
-        }
-      } catch (error) {
-        if (active) {
-          setTerrain(generateTerrain(options));
-          setApiStatus(`Local fallback (${error instanceof Error ? error.message : 'request failed'})`);
-        }
-      }
-    };
+      // Add layer group
+      layerGroup.current.addTo(map.current);
 
-    void loadTerrain();
+      // Add marker at center
+      L.circleMarker(CULTRA_CENTER, {
+        radius: 6,
+        fillColor: '#000',
+        color: '#fff',
+        weight: 2,
+        opacity: 0.8,
+        fillOpacity: 0.6,
+      }).bindPopup('40°52\'45.9"N, 7°20\'55.2"W<br>CULTRA Base').addTo(map.current);
+
+      // Add sample zones
+      initializeSampleData();
+    }
 
     return () => {
-      active = false;
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+      }
     };
-  }, [seed, roughness, moistureBias, temperatureBias]);
+  }, []);
 
-  const stats = useMemo(() => {
-    const cells = terrain.flat();
-    const avgElevation = cells.reduce((sum, cell) => sum + cell.elevation, 0) / cells.length;
-    const avgMoisture = cells.reduce((sum, cell) => sum + cell.moisture, 0) / cells.length;
-    const waterCells = cells.filter((cell) => cell.water > 0.6).length;
-    const biomeCounts = cells.reduce<Record<string, number>>((acc, cell) => {
-      acc[cell.biome] = (acc[cell.biome] ?? 0) + 1;
-      return acc;
-    }, {});
+  const initializeSampleData = () => {
+    // Sample acampamentos
+    const camps: Camp[] = [
+      {
+        id: 'AC-0',
+        type: 'camp',
+        name: 'Acampamento Base',
+        coordinates: [40.879417, -7.348667],
+        isPrimary: true,
+        createdAt: new Date(),
+      },
+      {
+        id: 'AC-A',
+        type: 'camp',
+        name: 'Acampamento Alfa',
+        coordinates: [40.885, -7.345],
+        pelotao: 'alfa',
+        createdAt: new Date(),
+      },
+      {
+        id: 'AC-B',
+        type: 'camp',
+        name: 'Acampamento Bravo',
+        coordinates: [40.875, -7.350],
+        pelotao: 'bravo',
+        createdAt: new Date(),
+      },
+      {
+        id: 'AC-C',
+        type: 'camp',
+        name: 'Acampamento Charlie',
+        coordinates: [40.870, -7.355],
+        pelotao: 'charlie',
+        createdAt: new Date(),
+      },
+    ];
 
-    return { avgElevation, avgMoisture, waterCells, biomeCounts };
-  }, [terrain]);
+    // Sample caixas
+    const boxes: Box[] = [
+      {
+        id: 'CX-A',
+        type: 'box',
+        name: 'Caixa Alfa',
+        coordinates: [40.890, -7.340],
+        pelotao: 'alfa',
+        status: 'not_found',
+        createdAt: new Date(),
+      },
+      {
+        id: 'CX-B',
+        type: 'box',
+        name: 'Caixa Bravo',
+        coordinates: [40.870, -7.360],
+        pelotao: 'bravo',
+        status: 'not_found',
+        createdAt: new Date(),
+      },
+      {
+        id: 'CX-C',
+        type: 'box',
+        name: 'Caixa Charlie',
+        coordinates: [40.865, -7.340],
+        pelotao: 'charlie',
+        status: 'not_found',
+        createdAt: new Date(),
+      },
+    ];
 
-  const handleExport = (format: ExportFormat) => {
-    if (format === 'png') {
-      const url = exportTerrain(terrain, 'png');
-      if (!url) {
-        return;
+    const allFeatures = [...camps, ...boxes] as Feature[];
+    setMapState(prev => ({
+      ...prev,
+      features: allFeatures,
+    }));
+
+    renderFeatures([...camps, ...boxes]);
+  };
+
+  const renderFeatures = (features: Feature[]) => {
+    if (!layerGroup.current) return;
+    layerGroup.current.clearLayers();
+
+    features.forEach(feature => {
+      const [lat, lng] = feature.coordinates;
+      let marker: L.Marker | L.CircleMarker;
+      let color = '#000';
+
+      if (feature.type === 'camp') {
+        const camp = feature as Camp;
+        color = camp.isPrimary ? '#000' : PELOTAO_COLORS[camp.pelotao || 'alfa'];
+        marker = L.circleMarker([lat, lng], {
+          radius: 8,
+          fillColor: color,
+          color: '#fff',
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.7,
+        });
+      } else if (feature.type === 'box') {
+        const box = feature as Box;
+        color = PELOTAO_COLORS[box.pelotao];
+        marker = L.marker([lat, lng], {
+          icon: L.divIcon({
+            html: `<div style="background:${color};width:20px;height:20px;border-radius:50%;border:2px solid white;display:flex;align-items:center;justify-content:center;font-size:10px;color:white;font-weight:bold;">📦</div>`,
+            iconSize: [24, 24],
+            className: 'custom-marker',
+          }),
+        });
+      } else {
+        marker = L.circleMarker([lat, lng], {
+          radius: 5,
+          fillColor: color,
+          color: '#fff',
+          weight: 1,
+          opacity: 0.8,
+          fillOpacity: 0.5,
+        });
       }
 
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'cultra-terrain.png';
-      link.click();
+      const popup = `
+        <b>${feature.name}</b><br/>
+        Type: ${feature.type}<br/>
+        Lat: ${lat.toFixed(6)}<br/>
+        Lng: ${lng.toFixed(6)}
+      `;
+
+      marker.bindPopup(popup).addTo(layerGroup.current!);
+    });
+  };
+
+  const addFeature = (lat: number, lng: number) => {
+    if (!selectedName) {
+      alert('Escreve um nome para o ponto!');
       return;
     }
 
-    const content = exportTerrain(terrain, format);
-    const blob = new Blob([content], { type: format === 'json' ? 'application/json' : 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `cultra-terrain.${format === 'json' ? 'json' : 'csv'}`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const newFeature: Feature = {
+      id: `${selectedType.toUpperCase()}-${Date.now()}`,
+      type: selectedType as any,
+      name: selectedName,
+      coordinates: [lat, lng],
+      createdAt: new Date(),
+    };
+
+    setMapState(prev => ({
+      ...prev,
+      features: [...prev.features, newFeature],
+    }));
+
+    renderFeatures([...mapState.features, newFeature]);
+    setSelectedName('');
+    setEditMode('view');
   };
 
-  const renderCell = (cell: TerrainCell) => ({
-    background: colorByBiome[cell.biome] ?? '#86efac',
-    opacity: 0.8 + cell.elevation * 0.2,
-    border: cell.water > 0.6 ? '1px solid rgba(255,255,255,0.4)' : '1px solid rgba(15,23,42,0.1)',
-  });
+  // Click on map to add features
+  useEffect(() => {
+    if (!map.current || editMode !== 'draw') return;
+
+    const handler = (e: L.LeafletMouseEvent) => {
+      addFeature(e.latlng.lat, e.latlng.lng);
+    };
+
+    map.current.on('click', handler);
+    return () => {
+      if (map.current) map.current.off('click', handler);
+    };
+  }, [editMode, selectedType, selectedName, mapState.features]);
 
   return (
-    <div className="app-shell">
-      <aside className="controls-panel">
-        <h1>Cultra Terrain Lab</h1>
-        <label>
-          <span>Seed</span>
-          <input type="range" min="1" max="100" value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
-          <strong>{seed}</strong>
-        </label>
-        <label>
-          <span>Roughness</span>
-          <input type="range" min="0.2" max="1.6" step="0.05" value={roughness} onChange={(e) => setRoughness(Number(e.target.value))} />
-          <strong>{roughness.toFixed(2)}</strong>
-        </label>
-        <label>
-          <span>Moisture bias</span>
-          <input type="range" min="-0.5" max="0.8" step="0.05" value={moistureBias} onChange={(e) => setMoistureBias(Number(e.target.value))} />
-          <strong>{moistureBias.toFixed(2)}</strong>
-        </label>
-        <label>
-          <span>Temperature bias</span>
-          <input type="range" min="-0.5" max="0.8" step="0.05" value={temperatureBias} onChange={(e) => setTemperatureBias(Number(e.target.value))} />
-          <strong>{temperatureBias.toFixed(2)}</strong>
-        </label>
+    <div className="cultra-gis">
+      <header className="gis-header">
+        <h1>🗺️ CULTRA BootCamp GIS</h1>
+        <p>Gestão de Mapas, Rotas e Missões</p>
+      </header>
 
-        <div className="stats-panel">
-          <h2>World Stats</h2>
-          <p>Terrain source: {apiStatus}</p>
-          <p>Avg elevation: {stats.avgElevation.toFixed(2)}</p>
-          <p>Avg moisture: {stats.avgMoisture.toFixed(2)}</p>
-          <p>Water cells: {stats.waterCells}</p>
-          <p>Biomes: {Object.entries(stats.biomeCounts).map(([name, count]) => `${name}:${count}`).join(' · ')}</p>
+      <div className="gis-container">
+        {/* Left Panel - Controls */}
+        <div className="control-panel">
+          <div className="section">
+            <h3>Modos</h3>
+            <button
+              className={`btn ${editMode === 'view' ? 'active' : ''}`}
+              onClick={() => setEditMode('view')}
+            >
+              👁️ Visualizar
+            </button>
+            <button
+              className={`btn ${editMode === 'draw' ? 'active' : ''}`}
+              onClick={() => setEditMode('draw')}
+            >
+              ✏️ Desenhar
+            </button>
+          </div>
+
+          {editMode === 'draw' && (
+            <div className="section">
+              <h3>Novo Ponto</h3>
+              <select value={selectedType} onChange={e => setSelectedType(e.target.value)}>
+                <option value="camp">Acampamento</option>
+                <option value="box">Caixa de Mantimentos</option>
+                <option value="control_point">Ponto de Controlo</option>
+                <option value="emergency">Ponto de Emergência</option>
+                <option value="user">Utilizador</option>
+              </select>
+              <input
+                type="text"
+                placeholder="Nome do ponto..."
+                value={selectedName}
+                onChange={e => setSelectedName(e.target.value)}
+              />
+              <p style={{ fontSize: '0.85em', color: '#666' }}>
+                Clica no mapa para adicionar
+              </p>
+            </div>
+          )}
+
+          <div className="section">
+            <h3>Pontos no Mapa ({mapState.features.length})</h3>
+            <div className="features-list">
+              {mapState.features.map(f => (
+                <div key={f.id} className="feature-item">
+                  <strong>{f.name}</strong>
+                  <small>{f.type}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="section">
+            <h3>Legenda</h3>
+            <div className="legend">
+              <div className="legend-item">
+                <div style={{ background: PELOTAO_COLORS.alfa, width: 12, height: 12, borderRadius: '50%' }}></div>
+                Pelotão Alfa
+              </div>
+              <div className="legend-item">
+                <div style={{ background: PELOTAO_COLORS.bravo, width: 12, height: 12, borderRadius: '50%' }}></div>
+                Pelotão Bravo
+              </div>
+              <div className="legend-item">
+                <div style={{ background: PELOTAO_COLORS.charlie, width: 12, height: 12, borderRadius: '50%' }}></div>
+                Pelotão Charlie
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div className="export-panel">
-          <button onClick={() => handleExport('json')}>Export JSON</button>
-          <button onClick={() => handleExport('csv')}>Export CSV</button>
-          <button onClick={() => handleExport('png')}>Export PNG</button>
-        </div>
+        {/* Map */}
+        <div className="map-container" ref={mapContainer}></div>
 
-        <div className="download-panel">
-          <a className="download-link" href="/cultra-app.zip" download>
-            Download App
-          </a>
-        </div>
-      </aside>
+        {/* Right Panel - Info */}
+        <div className="info-panel">
+          <div className="section">
+            <h3>Informação da Missão</h3>
+            <p><strong>Coordenada Base:</strong><br />40°52'45.9"N, 7°20'55.2"W</p>
+            <p><strong>Pelotões:</strong><br />Alfa | Bravo | Charlie</p>
+            <p><strong>Caixas de Mantimentos:</strong><br />CX-A | CX-B | CX-C</p>
+          </div>
 
-      <main className="terrain-panel">
-        <div className="terrain-grid" style={{ gridTemplateColumns: `repeat(${DEMO_WIDTH}, minmax(0, 1fr))` }}>
-          {terrain.flat().map((cell) => (
-            <div key={`${cell.x}-${cell.y}`} className="terrain-cell" style={renderCell(cell)} title={`${cell.biome} (${cell.elevation.toFixed(2)})`} />
-          ))}
+          <div className="section">
+            <h3>Zonas de Risco</h3>
+            <div className="zone-colors">
+              {Object.entries(ZONE_COLORS).map(([type, color]) => (
+                <div key={type} className="zone-color-item">
+                  <div style={{ background: color, width: 12, height: 12, borderRadius: '3px' }}></div>
+                  {type}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="section">
+            <h3>Exportar</h3>
+            <button
+              className="btn"
+              onClick={() => {
+                const json = JSON.stringify(mapState, null, 2);
+                const blob = new Blob([json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'cultra-map.json';
+                a.click();
+              }}
+            >
+              📥 GeoJSON
+            </button>
+          </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
